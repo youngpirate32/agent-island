@@ -198,6 +198,9 @@ class Monitor:
                         offset=f.tell()
                         try: apply(r,json.loads(line))
                         except (ValueError,TypeError,AttributeError): pass
+                if source == 'claude-app':
+                    local_id = next((part for part in p.parts if part.startswith('local_')), None)
+                    if local_id: r['desktopSessionID'] = local_id
                 self.cache[str(p)]=(offset,r)
                 for limit in r.get('_limits',[]):
                     if limit['updated'] > limits.get(limit['id'],{}).get('updated',0):limits[limit['id']]=limit

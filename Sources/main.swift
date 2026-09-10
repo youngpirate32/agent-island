@@ -13,6 +13,7 @@ struct Session: Codable, Identifiable {
     var totalTokens: Int? = nil
     var noticeText: String? = nil
     var title: String? = nil
+    var desktopSessionID: String? = nil
     var displayTitle: String { title?.isEmpty == false ? title! : project }
 }
 struct Quota: Codable, Identifiable {
@@ -334,6 +335,39 @@ final class IslandModel: ObservableObject {
         let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
         _ = AXIsProcessTrustedWithOptions(options)
         NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!)
+    }
+    func openSession(_ session: Session) {
+        guard !demo else { return }
+        var target: URL?
+        if session.source.hasPrefix("codex"), UUID(uuidString:session.id) != nil {
+            target = URL(string:"codex://threads/" + session.id)
+        } else if session.source == "claude-app", let local = session.desktopSessionID,
+                  local.hasPrefix("local_"), UUID(uuidString:String(local.dropFirst(6))) != nil {
+            target = URL(string:"claude://claude.ai/cowork/" + local)
+        }
+        if let target, NSWorkspace.shared.open(target) {
+            expanded = false; onResize?(); return
+        }
+        if session.source.hasSuffix("cli"), AXIsProcessTrusted() {
+            var matches: [(NSRunningApplication, AXUIElement)] = []
+            for app in NSWorkspace.shared.runningApplications where ["com.googlecode.iterm2","com.apple.Terminal","com.mitchellh.ghostty"].contains(app.bundleIdentifier ?? "") {
+                var value: CFTypeRef?
+                AXUIElementCopyAttributeValue(AXUIElementCreateApplication(app.processIdentifier),kAXWindowsAttribute as CFString,&value)
+                for window in value as? [AXUIElement] ?? [] {
+                    var title: CFTypeRef?
+                    AXUIElementCopyAttributeValue(window,kAXTitleAttribute as CFString,&title)
+                    if let title = title as? String, title.contains(session.id) || (session.title != nil && title.contains(session.displayTitle)) {
+                        matches.append((app,window))
+                    }
+                }
+            }
+            if matches.count == 1, AXUIElementPerformAction(matches[0].1,kAXRaiseAction as CFString) == .success {
+                matches[0].0.activate(); expanded = false; onResize?(); return
+            }
+        }
+        error = "Не удалось открыть точный сеанс. Открыт источник; выберите чат в нём."
+        openApp(session.source)
+        onResize?()
     }
     func openApp(_ source: String) {
         let id = source.contains("claude") ? "com.anthropic.claudefordesktop" : "com.openai.codex"
@@ -665,6 +699,16 @@ struct AgentRowStyle: ButtonStyle {
     }
 }
 
+struct SessionCardStyle: ButtonStyle {
+    @State private var hovered = false
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .contentShape(RoundedRectangle(cornerRadius:12))
+            .background(Color.white.opacity(configuration.isPressed ? 0.10 : hovered ? 0.05 : 0),in:RoundedRectangle(cornerRadius:12))
+            .onHover { hovered = $0 }
+    }
+}
+
 final class PersistentScrollView<Content: View>: NSScrollView {
     let hosting: NSHostingView<Content>
     init(content: Content) {
@@ -777,6 +821,7 @@ struct IslandView: View {
                     if (showSessions || model.demo) && !recent.isEmpty {
                         let cards = VStack(spacing:6) {
                             ForEach(recent) { session in
+                                Button { model.openSession(session) } label: {
                                 VStack(alignment:.leading,spacing:3) {
                                     HStack {
                                         Image(nsImage:session.source.hasPrefix("codex") ? BrandIcons.codex : BrandIcons.claude)
@@ -805,6 +850,7 @@ struct IslandView: View {
                                 .padding(.horizontal,12).padding(.vertical,9)
                                 .frame(maxWidth:.infinity,alignment:.leading)
                                 .background(.white.opacity(0.05),in:RoundedRectangle(cornerRadius:12))
+                                }.buttonStyle(SessionCardStyle()).disabled(model.demo)
                             }
                         }
                         if recent.count > 3 {

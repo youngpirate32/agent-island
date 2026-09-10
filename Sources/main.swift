@@ -427,13 +427,44 @@ final class IslandModel: ObservableObject {
                     } else if menuItems.isEmpty, let window = attribute(element,kAXWindowAttribute) {
                         AXUIElementPerformAction(window as! AXUIElement,kAXRaiseAction as CFString)
                     }
-                    let result = AXUIElementPerformAction(element,(isWindow ? kAXRaiseAction : kAXPressAction) as CFString)
-                    if result == .success {
-                        self.error = nil; self.expanded = false
-                    } else {
-                        self.error = "Терминал не смог выбрать сеанс «" + session.displayTitle + "»."
+                    var selectedElement = element
+                    if !menuItems.isEmpty {
+                        let root = AXUIElementCreateApplication(app.processIdentifier)
+                        var freshMatches: [AXUIElement] = []
+                        if let bar = attribute(root,kAXMenuBarAttribute) {
+                            for item in attribute(bar as! AXUIElement,kAXChildrenAttribute) as? [AXUIElement] ?? [] {
+                                guard ["Window","Окно"].contains(attribute(item,kAXTitleAttribute) as? String ?? "") else { continue }
+                                AXUIElementPerformAction(item,kAXPressAction as CFString)
+                                var pending = attribute(item,kAXChildrenAttribute) as? [AXUIElement] ?? []
+                                var count = 0
+                                while !pending.isEmpty && count < 150 {
+                                    let child = pending.removeFirst(); count += 1
+                                    if attribute(child,kAXRoleAttribute) as? String == "AXMenuItem",
+                                       matchesTitle(attribute(child,kAXTitleAttribute) as? String ?? "") {
+                                        freshMatches.append(child)
+                                    }
+                                    pending += attribute(child,kAXChildrenAttribute) as? [AXUIElement] ?? []
+                                }
+                            }
+                        }
+                        guard freshMatches.count == 1 else {
+                            self.error = "Не удалось однозначно выбрать сеанс в меню «Окно»."
+                            self.onResize?(); return
+                        }
+                        selectedElement = freshMatches[0]
                     }
-                    self.onResize?()
+                    let result = AXUIElementPerformAction(selectedElement,(isWindow ? kAXRaiseAction : kAXPressAction) as CFString)
+                    DispatchQueue.main.asyncAfter(deadline:.now() + 0.25) {
+                        let root = AXUIElementCreateApplication(app.processIdentifier)
+                        let focused = attribute(root,kAXFocusedWindowAttribute)
+                        let title = focused.flatMap { attribute($0 as! AXUIElement,kAXTitleAttribute) as? String } ?? ""
+                        if result == .success && matchesTitle(title) {
+                            self.error = nil; self.expanded = false
+                        } else {
+                            self.error = "Терминал не подтвердил переход к «" + session.displayTitle + "»."
+                        }
+                        self.onResize?()
+                    }
                 }
                 return
             }

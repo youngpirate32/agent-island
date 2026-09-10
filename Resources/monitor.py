@@ -83,8 +83,21 @@ def apply(record, d):
     elif event in ['turn_aborted', 'task_interrupted']: status = 'idle'
     elif event in ['request_user_input', 'approval_request']: status = 'waiting'
     attention = 'permission' if event == 'approval_request' else 'input'
-    if typ == 'response_item' and p.get('type') in ['function_call', 'custom_tool_call'] and 'request_user_input' in str(p.get('name', '')):
-        status = 'waiting'
+    if record['source'].startswith('codex'):
+        if event == 'user_message': status = 'working'
+        if typ == 'response_item':
+            kind = p.get('type')
+            name = str(p.get('name', ''))
+            if kind in ['function_call', 'custom_tool_call']:
+                if 'request_user_input' in name and not name.endswith('_async'):
+                    status = 'waiting'
+                    record['_waiting_call'] = p.get('call_id')
+                elif record.get('attention') == 'permission':
+                    status = 'working'
+            elif kind in ['function_call_output', 'custom_tool_call_output']:
+                if p.get('call_id') and p.get('call_id') == record.get('_waiting_call'):
+                    status = 'working'
+                    record.pop('_waiting_call', None)
     if record['source'].startswith('claude'):
         if d.get('isSidechain'): return
         if typ == 'user': status = 'working'
@@ -113,7 +126,7 @@ def hook():
                   'Interrupt':'idle'}.get(name)
         if name == 'Notification' and d.get('notification_type') in ['permission_prompt','idle_prompt','elicitation_dialog']:
             status = 'waiting'
-        if name == 'PreToolUse' and ('request_user_input' in str(d.get('tool_name', '')) or d.get('tool_name') == 'AskUserQuestion'):
+        if name == 'PreToolUse' and (('request_user_input' in str(d.get('tool_name', '')) and not str(d.get('tool_name', '')).endswith('_async')) or d.get('tool_name') == 'AskUserQuestion'):
             status = 'waiting'
         if status:
             sid = d.get('session_id', 'unknown')

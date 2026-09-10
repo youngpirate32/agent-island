@@ -124,7 +124,7 @@ def hook():
         status = {'UserPromptSubmit':'working','PreToolUse':'working','PostToolUse':'working','PostToolUseFailure':'error',
                   'PermissionRequest':'waiting','Stop':'done','StopFailure':'error','SessionEnd':'idle',
                   'Interrupt':'idle'}.get(name)
-        if name == 'Notification' and d.get('notification_type') in ['permission_prompt','idle_prompt','elicitation_dialog']:
+        if name == 'Notification' and d.get('notification_type') in ['permission_prompt','elicitation_dialog']:
             status = 'waiting'
         if name == 'PreToolUse' and (('request_user_input' in str(d.get('tool_name', '')) and not str(d.get('tool_name', '')).endswith('_async')) or d.get('tool_name') == 'AskUserQuestion'):
             status = 'waiting'

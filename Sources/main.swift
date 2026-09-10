@@ -391,19 +391,42 @@ final class IslandModel: ObservableObject {
                     }
                 }
             }
-            let candidates = !tabs.isEmpty ? tabs : !windows.isEmpty ? windows : menuItems
+            // Window-menu entries select a native tab even when it is not the
+            // currently visible tab in its window group.
+            let candidates = !menuItems.isEmpty ? menuItems : !tabs.isEmpty ? tabs : windows
             if candidates.count == 1 {
                 let (app,element) = candidates[0]
-                let action = !tabs.isEmpty || windows.isEmpty ? kAXPressAction : kAXRaiseAction
-                if AXUIElementPerformAction(element,action as CFString) == .success {
-                    app.activate(); error = nil; expanded = false; onResize?(); return
+                let isWindow = menuItems.isEmpty && tabs.isEmpty
+                app.activate()
+                DispatchQueue.main.asyncAfter(deadline:.now() + 0.2) { [weak self] in
+                    guard let self else { return }
+                    if isWindow {
+                        AXUIElementSetAttributeValue(element,kAXMinimizedAttribute as CFString,kCFBooleanFalse)
+                        AXUIElementSetAttributeValue(element,kAXMainAttribute as CFString,kCFBooleanTrue)
+                    } else if menuItems.isEmpty, let window = attribute(element,kAXWindowAttribute) {
+                        AXUIElementPerformAction(window as! AXUIElement,kAXRaiseAction as CFString)
+                    }
+                    let result = AXUIElementPerformAction(element,(isWindow ? kAXRaiseAction : kAXPressAction) as CFString)
+                    if result == .success {
+                        self.error = nil; self.expanded = false
+                    } else {
+                        self.error = "Терминал не смог выбрать сеанс «" + session.displayTitle + "»."
+                    }
+                    self.onResize?()
                 }
+                return
             }
+            error = candidates.count > 1
+                ? "Найдено несколько сеансов с этим названием. Задайте уникальное название."
+                : "Сеанс «" + session.displayTitle + "» не найден среди окон и вкладок терминала."
+        } else {
+            error = session.source.hasSuffix("cli")
+                ? "Для выбора вкладки разрешите Agent Island универсальный доступ в настройках macOS."
+                : "Прямая ссылка на этот сеанс недоступна."
         }
-        error = "Не удалось открыть точный сеанс. Открыт источник; выберите чат в нём."
-        openApp(session.source)
         onResize?()
     }
+
     func openApp(_ source: String) {
         let id = source.contains("claude") ? "com.anthropic.claudefordesktop" : "com.openai.codex"
         if source.hasSuffix("cli") {

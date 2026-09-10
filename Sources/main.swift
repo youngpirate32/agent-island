@@ -72,7 +72,7 @@ enum Preferences {
         "notifyCodex":true,"notifyClaude":true,"notificationSound":false,"autoHideNotifications":true,"notificationDelay":7.0,
         "animateLogos":true,"animatePanel":true,"logoSpeed":1.0,"logoSize":14.0,"overlapLogos":true,
         "compactSide":"left","expandedWidth":350.0,"cornerRadius":24.0,"panelShadow":true,
-        "showSessions":true,"showTokens":true,"showTime":true,"showQuotas":true,"showChat":true,"showAccessButton":true,"hideInactive":true,"visibility.codex-app":"active","visibility.codex-cli":"active","visibility.claude-app":"active","visibility.claude-cli":"active","sessionCount":3,
+        "showSessions":true,"showTokens":true,"showTime":true,"showQuotas":true,"combineQuotas":true,"showChat":true,"showAccessButton":true,"hideInactive":true,"visibility.codex-app":"active","visibility.codex-cli":"active","visibility.claude-app":"active","visibility.claude-cli":"active","sessionCount":3,
         "closeOnOutsideClick":true
     ]
     static func enabled(_ key: String) -> Bool { UserDefaults.standard.bool(forKey:key) }
@@ -768,6 +768,7 @@ struct DataSettings: View {
     @AppStorage("showTokens") private var tokens = true
     @AppStorage("showTime") private var time = true
     @AppStorage("showQuotas") private var quotas = true
+    @AppStorage("combineQuotas") private var combineQuotas = true
     @AppStorage("showAccessButton") private var showAccessButton = true
     @AppStorage("hideInactive") private var inactive = true
     @AppStorage("sessionCount") private var count = 3
@@ -780,6 +781,7 @@ struct DataSettings: View {
                 Toggle("Счётчики токенов",isOn:$tokens).disabled(!sessions)
                 Toggle("Время запроса",isOn:$time).disabled(!sessions)
                 Toggle("Остатки лимитов подписки",isOn:$quotas)
+                Toggle("Объединять лимиты 5ч и 7д",isOn:$combineQuotas).disabled(!quotas)
             }
             Section("Видимость источников") {
                 ForEach(sources,id:\.0) { source in
@@ -831,6 +833,7 @@ struct QuotaBadge: View {
     }
 }
 struct QuotaStrip: View {
+    @AppStorage("combineQuotas") private var combineQuotas = true
     let quotas: [Quota]
     var body: some View {
         HStack(spacing:12) {
@@ -841,6 +844,8 @@ struct QuotaStrip: View {
                         Image(nsImage:provider == "codex" ? BrandIcons.codex : BrandIcons.claude).resizable().frame(width:12,height:12)
                         Text("—").foregroundStyle(.gray)
                     }.help((provider == "codex" ? "Codex" : "Claude") + ": нет данных")
+                } else if !combineQuotas {
+                    ForEach(limits) { quota in QuotaBadge(quota:quota) }
                 } else {
                     HStack(spacing:4) {
                         Image(nsImage:provider == "codex" ? BrandIcons.codex : BrandIcons.claude).resizable().frame(width:12,height:12)

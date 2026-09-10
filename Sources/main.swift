@@ -360,8 +360,12 @@ final class IslandModel: ObservableObject {
             func matchesTitle(_ title: String) -> Bool {
                 if title.contains(session.id) { return true }
                 guard let name = session.title, !name.isEmpty else { return false }
-                let trim = CharacterSet.whitespacesAndNewlines.union(.symbols).union(.punctuationCharacters)
-                return title.trimmingCharacters(in:trim).localizedCaseInsensitiveCompare(name.trimmingCharacters(in:trim)) == .orderedSame
+                func normalized(_ value: String) -> String {
+                    let cleaned = String(value.unicodeScalars.filter { !CharacterSet.nonBaseCharacters.contains($0) && !CharacterSet.controlCharacters.contains($0) })
+                    let trim = CharacterSet.alphanumerics.inverted
+                    return cleaned.trimmingCharacters(in:trim).precomposedStringWithCanonicalMapping
+                }
+                return normalized(title).localizedCaseInsensitiveCompare(normalized(name)) == .orderedSame
             }
             for app in NSWorkspace.shared.runningApplications where ["com.googlecode.iterm2","com.apple.Terminal","com.mitchellh.ghostty"].contains(app.bundleIdentifier ?? "") {
                 let root = AXUIElementCreateApplication(app.processIdentifier)
@@ -370,24 +374,41 @@ final class IslandModel: ObservableObject {
                 for window in appWindows {
                     if matchesTitle(attribute(window,kAXTitleAttribute) as? String ?? "") { windows.append((app,window)) }
                 }
+                var openedMenus: [AXUIElement] = []
                 var queue = appWindows.map { ($0,0) }
-                if let menu = attribute(root,kAXMenuBarAttribute) { queue.append((menu as! AXUIElement,0)) }
+                if let menu = attribute(root,kAXMenuBarAttribute) {
+                    let menuBar = menu as! AXUIElement
+                    // Native window menus can populate lazily when opened.
+                    for item in attribute(menuBar,kAXChildrenAttribute) as? [AXUIElement] ?? [] {
+                        let name = attribute(item,kAXTitleAttribute) as? String ?? ""
+                        if ["Window","Окно"].contains(name) {
+                            if AXUIElementPerformAction(item,kAXPressAction as CFString) == .success { openedMenus.append(item) }
+                        }
+                    }
+                    queue.append((menuBar,0))
+                }
                 var visited = 0
                 while !queue.isEmpty && visited < 500 {
                     let (element,depth) = queue.removeFirst(); visited += 1
                     let role = attribute(element,kAXRoleAttribute) as? String ?? ""
                     // Never read terminal contents or send keystrokes to a shell.
                     if ["AXTextArea","AXTextField","AXWebArea"].contains(role) { continue }
-                    if ["AXRadioButton","AXTab","AXMenuItem"].contains(role) {
+                    if ["AXRadioButton","AXTab","AXMenuItem","AXButton"].contains(role) {
                         let title = attribute(element,kAXTitleAttribute) as? String ?? ""
                         let description = attribute(element,kAXDescriptionAttribute) as? String ?? ""
-                        if matchesTitle(title) || matchesTitle(description) {
+                        let value = attribute(element,kAXValueAttribute) as? String ?? ""
+                        if matchesTitle(title) || matchesTitle(description) || matchesTitle(value) {
                             if role == "AXMenuItem" { menuItems.append((app,element)) }
                             else { tabs.append((app,element)) }
                         }
                     }
                     if depth < 12 {
                         queue += (attribute(element,kAXChildrenAttribute) as? [AXUIElement] ?? []).map { ($0,depth+1) }
+                    }
+                }
+                for item in openedMenus {
+                    for menu in attribute(item,kAXChildrenAttribute) as? [AXUIElement] ?? [] {
+                        AXUIElementPerformAction(menu,kAXCancelAction as CFString)
                     }
                 }
             }

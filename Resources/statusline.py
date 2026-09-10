@@ -16,10 +16,4 @@ try:
     config=json.loads(previous.read_text()) if previous.exists() else None
     if config and config.get('command'):
         subprocess.run(config['command'],shell=True,input=raw,text=True,timeout=4)
-    else:
-        parts=[]
-        for key,title in [('five_hour','5ч'),('seven_day','Неделя')]:
-            used=(limits or {}).get(key,{}).get('used_percentage')
-            if isinstance(used,(int,float)):parts.append(title+': осталось '+str(round(max(0,100-used)))+'%')
-        if parts:print(' · '.join(parts))
 except Exception:pass

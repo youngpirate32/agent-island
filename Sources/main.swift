@@ -1,6 +1,7 @@
 import Cocoa
 import SwiftUI
 import ApplicationServices
+import ServiceManagement
 
 struct Session: Codable, Identifiable {
     var id: String; var source: String; var status: String; var updated: Double; var project: String; var attention: String? = nil
@@ -169,8 +170,8 @@ final class IslandModel: ObservableObject {
     }
     func checkQuotaThresholds(_ limits: [Quota]) {
         for quota in limits where quota.resetsAt > Date().timeIntervalSince1970 {
-            let key = "quota-threshold:" + quota.id
-            let step = Int(floor((100 - quota.remaining) / 10))
+            let key = "quota-threshold-v2:" + quota.id
+            let step = [90.0,80,70,60,50,40,30,25,20,15,10,5,0].filter { quota.remaining <= $0 }.count
             let saved = UserDefaults.standard.dictionary(forKey:key)
             let sameWindow = (saved?["reset"] as? Double) == quota.resetsAt
             let previous = sameWindow ? (saved?["step"] as? Int) : nil
@@ -448,7 +449,7 @@ final class IslandModel: ObservableObject {
                             }
                         }
                         guard freshMatches.count == 1 else {
-                            self.error = "Не удалось однозначно выбрать сеанс в меню «Окно»."
+                            self.error = nil
                             self.onResize?(); return
                         }
                         selectedElement = freshMatches[0]
@@ -461,20 +462,16 @@ final class IslandModel: ObservableObject {
                         if result == .success && matchesTitle(title) {
                             self.error = nil; self.expanded = false
                         } else {
-                            self.error = "Терминал не подтвердил переход к «" + session.displayTitle + "»."
+                            self.error = nil
                         }
                         self.onResize?()
                     }
                 }
                 return
             }
-            error = candidates.count > 1
-                ? "Найдено несколько сеансов с этим названием. Задайте уникальное название."
-                : "Сеанс «" + session.displayTitle + "» не найден среди окон и вкладок терминала."
+            error = nil
         } else {
-            error = session.source.hasSuffix("cli")
-                ? "Для выбора вкладки разрешите Agent Island универсальный доступ в настройках macOS."
-                : "Прямая ссылка на этот сеанс недоступна."
+            error = nil
         }
         onResize?()
     }
@@ -597,10 +594,40 @@ struct IslandSettings: View {
     @ObservedObject var model: IslandModel
     var body: some View {
         TabView {
+            GeneralSettings().tabItem { Label("Основные",systemImage:"gearshape") }
             NotificationSettings(model:model).tabItem { Label("Уведомления",systemImage:"bell") }
             AppearanceSettings().tabItem { Label("Внешний вид",systemImage:"paintbrush") }
             DataSettings(model:model).tabItem { Label("Панель",systemImage:"slider.horizontal.3") }
         }.padding(16).frame(width:490,height:525).preferredColorScheme(.dark)
+    }
+}
+struct GeneralSettings: View {
+    @State private var enabled = SMAppService.mainApp.status == .enabled
+    @State private var message: String?
+    var body: some View {
+        Form {
+            Section("Запуск") {
+                Toggle("Запускать при входе в macOS",isOn:Binding(get:{enabled},set:{ value in
+                    do {
+                        if value { try SMAppService.mainApp.register() }
+                        else { try SMAppService.mainApp.unregister() }
+                        enabled = SMAppService.mainApp.status == .enabled
+                        message = nil
+                    } catch { message = "Не удалось изменить автозапуск: " + error.localizedDescription }
+                }))
+                if SMAppService.mainApp.status == .requiresApproval {
+                    Button("Разрешить в настройках macOS") { SMAppService.openSystemSettingsLoginItems() }
+                }
+                if let message { Text(message).font(.caption).foregroundStyle(.orange) }
+            }
+            Section("Приложение") {
+                Button("Выйти из Agent Island") { NSApp.terminate(nil) }
+                Text("Выход завершает приложение сейчас. Чтобы оно не запускалось при следующем входе, отключите автозапуск выше.").font(.caption).foregroundStyle(.secondary)
+            }
+        }.formStyle(.grouped)
+        .onReceive(NotificationCenter.default.publisher(for:NSApplication.didBecomeActiveNotification)) { _ in
+            enabled = SMAppService.mainApp.status == .enabled
+        }
     }
 }
 struct NotificationSettings: View {
@@ -622,31 +649,13 @@ struct NotificationSettings: View {
                 Toggle("Нужен ответ или разрешение",isOn:$waiting)
                 Toggle("Ответ готов",isOn:$done)
                 Toggle("Ошибка агента",isOn:$errors)
-                Toggle("Расход очередных 10% лимита",isOn:$quota)
+                Toggle("Расход лимита подписки",isOn:$quota)
+                Text("Уведомления на остатке 90%, 80%…30%, затем 25%, 20%, 15%, 10%, 5% и 0%. При скачке — одно уведомление с актуальным остатком.").font(.caption).foregroundStyle(.secondary)
+                Text("Цвет остатка: 25% и ниже — жёлтый; 10% и ниже — красный.").font(.caption).foregroundStyle(.secondary)
             }.disabled(!enabled)
             Section("От кого") {
                 HStack { Toggle("Codex",isOn:$codex); Toggle("Claude",isOn:$claude) }
             }.disabled(!enabled)
-            Section("Видимость источников") {
-                ForEach(sources,id:\.0) { source in
-                    SourceVisibilityPicker(source:source.0,title:source.1 + " · " + (source.0.hasSuffix("cli") ? "терминал" : "приложение"))
-                }
-                Text("Без связи — нет сигнала о состоянии. Активные задачи — работа, ожидание ответа или ошибка. Эти настройки скрывают строки источников; сеансы и уведомления настраиваются отдельно.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-            Section("Обычный чат Claude") {
-                TimelineView(.periodic(from:.now,by:2)) { _ in
-                    HStack {
-                        Text(AXIsProcessTrusted() ? "Универсальный доступ подключён" : "Нужен универсальный доступ")
-                        Spacer()
-                        if AXIsProcessTrusted() {
-                            Image(systemName:"checkmark.circle.fill").foregroundStyle(.green)
-                        } else {
-                            Button("Подключить") { model.requestAccess() }
-                        }
-                    }
-                }
-            }
             Section("Поведение") {
                 Toggle("Звук при появлении",isOn:$sound)
                 Toggle("Скрывать автоматически",isOn:$autoHide)
@@ -759,7 +768,7 @@ struct DataSettings: View {
 struct QuotaBadge: View {
     let quota: Quota
     var fresh: Bool { quota.resetsAt > Date().timeIntervalSince1970 }
-    var tint: Color { !fresh ? .gray : quota.remaining < 10 ? .red : quota.remaining < 25 ? .yellow : .white }
+    var tint: Color { !fresh ? .gray : quota.remaining <= 10 ? .red : quota.remaining <= 25 ? .yellow : .white }
     var title: String { quota.label == "Неделя" ? "7д" : quota.label == "5 часов" ? "5ч" : quota.label }
     var hint: String {
         let provider = quota.provider == "codex" ? "Codex" : "Claude"
@@ -1061,10 +1070,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let menu = NSMenu()
         menu.addItem(withTitle:"Показать / свернуть",action:#selector(toggle),keyEquivalent:"")
         menu.addItem(withTitle:"Настройки…",action:#selector(showSettings),keyEquivalent:",")
-        menu.addItem(withTitle:"Демонстрация",action:#selector(demo),keyEquivalent:"")
-        menu.addItem(withTitle:"Пример уведомления",action:#selector(previewAttention),keyEquivalent:"")
-        menu.addItem(withTitle:"Пример завершения",action:#selector(previewCompletion),keyEquivalent:"")
-        menu.addItem(withTitle:"Подключить обычный чат Claude…",action:#selector(access),keyEquivalent:"")
         menu.addItem(.separator())
         menu.addItem(withTitle:"Выйти",action:#selector(quit),keyEquivalent:"q")
         for entry in menu.items { entry.target = self }; item.menu = menu
@@ -1263,7 +1268,7 @@ if CommandLine.arguments.contains("--self-test-attention") {
     var oldData = try! JSONEncoder().encode([oldDone]); oldData.append(10); fresh.receive(oldData)
     precondition(fresh.attentionSession == nil)
     let quotaID = "test-agent-island-quota"
-    let key = "quota-threshold:" + quotaID
+    let key = "quota-threshold-v2:" + quotaID
     UserDefaults.standard.removeObject(forKey:key)
     let reset = Date().timeIntervalSince1970 + 600
     let quotaModel = IslandModel()
@@ -1282,6 +1287,13 @@ if CommandLine.arguments.contains("--self-test-attention") {
     precondition(restarted.quotaNotices.isEmpty)
     restarted.checkQuotaThresholds([quota(95,reset + 600)])
     precondition(restarted.quotaNotices.isEmpty)
+    quotaModel.quotaNotices.removeAll()
+    quotaModel.checkQuotaThresholds([quota(30,reset)])
+    quotaModel.quotaNotices.removeAll()
+    for value in [29.0,26,25,24,20,15,10,5,0] { quotaModel.checkQuotaThresholds([quota(value,reset)]) }
+    precondition(quotaModel.quotaNotices.count == 6)
+    quotaModel.checkQuotaThresholds([quota(0,reset)])
+    precondition(quotaModel.quotaNotices.count == 6)
     UserDefaults.standard.removeObject(forKey:key)
     print("Attention and quota transitions passed")
     exit(0)

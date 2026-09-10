@@ -4,6 +4,21 @@ import os, sys, json, time, pathlib, datetime, hashlib, sqlite3
 HOME = pathlib.Path.home()
 STATE = HOME / 'Library/Application Support/AgentIsland/events'
 
+def log_hook(event, status, sid, notification=None):
+    try:
+        folder=HOME/'Library/Logs/AgentIsland'
+        folder.mkdir(parents=True,exist_ok=True,mode=0o700)
+        now=datetime.datetime.now(datetime.timezone.utc)
+        for old in folder.glob('hooks-*.jsonl'):
+            if time.time()-old.stat().st_mtime > 7*86400: old.unlink()
+        path=folder/('hooks-'+now.strftime('%Y-%m-%d')+'.jsonl')
+        if path.exists() and path.stat().st_size > 2*1024*1024:return
+        row=dict(time=now.isoformat(),event='hook',hook=event,status=status,session=sid,notification=notification)
+        fd=os.open(path,os.O_WRONLY|os.O_APPEND|os.O_CREAT,0o600)
+        try:os.write(fd,(json.dumps(row)+'\n').encode())
+        finally:os.close(fd)
+    except OSError:pass
+
 def stamp(value):
     try: return datetime.datetime.fromisoformat(value.replace('Z', '+00:00')).timestamp()
     except (ValueError, TypeError, AttributeError): return time.time()
@@ -128,6 +143,7 @@ def hook():
             status = 'waiting'
         if name == 'PreToolUse' and (('request_user_input' in str(d.get('tool_name', '')) and not str(d.get('tool_name', '')).endswith('_async')) or d.get('tool_name') == 'AskUserQuestion'):
             status = 'waiting'
+        log_hook(name,status,d.get('session_id','unknown'),d.get('notification_type'))
         if status:
             sid = d.get('session_id', 'unknown')
             obj = dict(id=sid, source=sys.argv[2], status=status, updated=time.time(),

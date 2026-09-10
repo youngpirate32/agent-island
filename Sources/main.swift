@@ -3,6 +3,32 @@ import SwiftUI
 import ApplicationServices
 import ServiceManagement
 
+enum Journal {
+    static let directory = FileManager.default.urls(for:.libraryDirectory,in:.userDomainMask)[0].appendingPathComponent("Logs/AgentIsland")
+    static let queue = DispatchQueue(label:"AgentIsland.Journal")
+    static func write(_ event: String, _ fields: [String:String] = [:]) {
+        guard !CommandLine.arguments.contains(where: { $0.hasPrefix("--self-test") }) else { return }
+        queue.async {
+            let fm = FileManager.default
+            try? fm.createDirectory(at:directory,withIntermediateDirectories:true,attributes:[.posixPermissions:0o700])
+            let now = Date()
+            let stamp = ISO8601DateFormatter().string(from:now)
+            for file in (try? fm.contentsOfDirectory(at:directory,includingPropertiesForKeys:[.contentModificationDateKey])) ?? [] where file.pathExtension == "jsonl" {
+                if let modified = try? file.resourceValues(forKeys:[.contentModificationDateKey]).contentModificationDate, now.timeIntervalSince(modified) > 7*86400 { try? fm.removeItem(at:file) }
+            }
+            let file = directory.appendingPathComponent("app-" + String(stamp.prefix(10)) + ".jsonl")
+            if ((try? fm.attributesOfItem(atPath:file.path)[.size] as? NSNumber)?.intValue ?? 0) > 2*1024*1024 { return }
+            var row = fields; row["time"] = stamp; row["event"] = event
+            guard var data = try? JSONSerialization.data(withJSONObject:row,options:.sortedKeys) else { return }
+            data.append(10)
+            if !fm.fileExists(atPath:file.path) { fm.createFile(atPath:file.path,contents:nil,attributes:[.posixPermissions:0o600]) }
+            guard let handle = try? FileHandle(forWritingTo:file) else { return }
+            defer { try? handle.close() }
+            do { try handle.seekToEnd(); try handle.write(contentsOf:data) } catch {}
+        }
+    }
+}
+
 struct Session: Codable, Identifiable {
     var id: String; var source: String; var status: String; var updated: Double; var project: String; var attention: String? = nil
     var turnStarted: Double? = nil
@@ -13,6 +39,7 @@ struct Session: Codable, Identifiable {
     var cachedTokens: Int? = nil
     var totalTokens: Int? = nil
     var noticeText: String? = nil
+    var quotaRemaining: Double? = nil
     var title: String? = nil
     var desktopSessionID: String? = nil
     var displayTitle: String { title?.isEmpty == false ? title! : project }
@@ -116,6 +143,9 @@ final class IslandModel: ObservableObject {
                 if let completion = completionSession, !list.contains(where: { $0.id == completion.id && $0.status == completion.status }) {
                     completionSession = nil
                 }
+                for session in list where previous[session.id] != session.status {
+                    Journal.write("status_changed",["session":session.id,"source":session.source,"from":previous[session.id] ?? "unseen","to":session.status,"reason":session.attention ?? "source_update"])
+                }
                 sessions = list
                 let waiting = Set(list.filter { $0.status == "waiting" }.map { $0.id })
                 dismissedWaiting.formIntersection(waiting)
@@ -177,7 +207,7 @@ final class IslandModel: ObservableObject {
             let sameWindow = (saved?["reset"] as? Double) == quota.resetsAt
             let previous = sameWindow ? (saved?["step"] as? Int) : nil
             if let previous, step > previous, Preferences.enabled("notificationsEnabled"), Preferences.enabled("notifyQuota"), Preferences.enabled(quota.provider == "codex" ? "notifyCodex" : "notifyClaude") {
-                quotaNotices.append(Session(id:key + ":" + String(step),source:quota.provider + "-app",status:"quota",updated:quota.updated,project:(quota.provider == "codex" ? "Codex" : "Claude") + " · " + quota.label,attention:"quota",noticeText:String(format:"Осталось %.0f%% лимита",quota.remaining)))
+                quotaNotices.append(Session(id:key + ":" + String(step),source:quota.provider + "-app",status:"quota",updated:quota.updated,project:(quota.provider == "codex" ? "Codex" : "Claude") + " · " + quota.label,attention:"quota",noticeText:String(format:"Осталось %.0f%% лимита",quota.remaining),quotaRemaining:quota.remaining))
             }
             UserDefaults.standard.set(["reset":quota.resetsAt,"step":max(step,previous ?? step)],forKey:key)
         }
@@ -278,7 +308,7 @@ final class IslandModel: ObservableObject {
         case 6:
             completionSession = nil
             var notice = sample("demo-limit","codex-app","quota","Недельный лимит")
-            notice.noticeText = "Осталось 20% лимита";quotaNotices = [notice]
+            notice.quotaRemaining = 20; notice.noticeText = "Осталось 20% лимита";quotaNotices = [notice]
         case 7:
             quotaNotices.removeAll();sessions[1].status = "error";completionSession = sessions[1]
         case 8:
@@ -342,6 +372,7 @@ final class IslandModel: ObservableObject {
     }
     func openSession(_ session: Session) {
         guard !demo else { return }
+        Journal.write("open_session",["session":session.id,"source":session.source,"accessibility":String(AXIsProcessTrusted())])
         var target: URL?
         if session.source.hasPrefix("codex"), UUID(uuidString:session.id) != nil {
             target = URL(string:"codex://threads/" + session.id)
@@ -350,6 +381,7 @@ final class IslandModel: ObservableObject {
             target = URL(string:"claude://claude.ai/cowork/" + local)
         }
         if let target, NSWorkspace.shared.open(target) {
+            Journal.write("deeplink_dispatched",["session":session.id])
             expanded = false; onResize?(); return
         }
         if session.source.hasSuffix("cli"), AXIsProcessTrusted() {
@@ -419,6 +451,7 @@ final class IslandModel: ObservableObject {
             // Window-menu entries select a native tab even when it is not the
             // currently visible tab in its window group.
             let candidates = !menuItems.isEmpty ? menuItems : !tabs.isEmpty ? tabs : windows
+            Journal.write("terminal_candidates",["session":session.id,"windows":String(windows.count),"tabs":String(tabs.count),"menuItems":String(menuItems.count)])
             if candidates.count == 1 {
                 let (app,element) = candidates[0]
                 let isWindow = menuItems.isEmpty && tabs.isEmpty
@@ -462,6 +495,7 @@ final class IslandModel: ObservableObject {
                         let root = AXUIElementCreateApplication(app.processIdentifier)
                         let focused = attribute(root,kAXFocusedWindowAttribute)
                         let title = focused.flatMap { attribute($0 as! AXUIElement,kAXTitleAttribute) as? String } ?? ""
+                        Journal.write("terminal_selection",["session":session.id,"result":String(result.rawValue),"confirmed":String(matchesTitle(title))])
                         if result == .success && matchesTitle(title) {
                             self.error = nil; self.expanded = false
                         } else {
@@ -575,7 +609,7 @@ struct AttentionView: View {
                 Text(session.status == "quota" ? (model.demo ? "Пример · лимит подписки" : "Лимит подписки") : session.status == "error" ? (model.demo ? "Пример · ошибка агента" : "Агент сообщил об ошибке") : session.status == "done" ? (model.demo ? "Пример · ответ готов" : (session.source.hasPrefix("codex") ? "Codex · ответ готов" : "Claude · ответ готов")) : (model.demo ? "Пример · нужен ваш ответ" : (session.source.hasPrefix("codex") ? "Codex ждёт вас" : "Claude ждёт вас")))
                     .font(.system(size:13,weight:.semibold))
                 Text(session.status == "quota" ? (session.noticeText ?? "Лимит обновился") : session.status == "error" ? "Откройте сеанс для подробностей" : session.status == "done" ? "Можно посмотреть результат" : (session.attention == "permission" ? "Нужно разрешение на действие" : "Нужен ответ или подтверждение"))
-                    .font(.system(size:11)).foregroundStyle(session.status == "done" ? .green : .orange)
+                    .font(.system(size:11)).foregroundStyle(session.status == "done" ? Color.green : session.status == "quota" && (session.quotaRemaining ?? 100) <= 10 ? Color.red : Color.orange)
                 Text(session.displayTitle).font(.system(size:10)).foregroundStyle(.gray).lineLimit(1)
             }
             Spacer(minLength:0)
@@ -622,6 +656,13 @@ struct GeneralSettings: View {
                     Button("Разрешить в настройках macOS") { SMAppService.openSystemSettingsLoginItems() }
                 }
                 if let message { Text(message).font(.caption).foregroundStyle(.orange) }
+            }
+            Section("Диагностика") {
+                Button("Открыть логи") {
+                    try? FileManager.default.createDirectory(at:Journal.directory,withIntermediateDirectories:true)
+                    NSWorkspace.shared.open(Journal.directory)
+                }
+                Text("Хранятся 7 дней. Только технические события и ID сеансов — без переписки, названий проектов и ключей. До 2 МБ в сутки на журнал.").font(.caption).foregroundStyle(.secondary)
             }
             Section("Приложение") {
                 Button("Выйти из Agent Island") { NSApp.terminate(nil) }
@@ -794,14 +835,26 @@ struct QuotaStrip: View {
     var body: some View {
         HStack(spacing:12) {
             ForEach(["codex","claude"],id:\.self) { provider in
-                let limits = quotas.filter { $0.provider == provider }
+                let limits = quotas.filter { $0.provider == provider }.sorted { ($0.label == "5 часов" ? 0 : 1) < ($1.label == "5 часов" ? 0 : 1) }
                 if limits.isEmpty {
                     HStack(spacing:4) {
                         Image(nsImage:provider == "codex" ? BrandIcons.codex : BrandIcons.claude).resizable().frame(width:12,height:12)
                         Text("—").foregroundStyle(.gray)
                     }.help((provider == "codex" ? "Codex" : "Claude") + ": нет данных")
                 } else {
-                    ForEach(limits) { quota in QuotaBadge(quota:quota) }
+                    HStack(spacing:4) {
+                        Image(nsImage:provider == "codex" ? BrandIcons.codex : BrandIcons.claude).resizable().frame(width:12,height:12)
+                        HStack(spacing:1) {
+                            ForEach(Array(limits.enumerated()),id:\.element.id) { index, quota in
+                                if index > 0 { Text("/").foregroundStyle(.gray) }
+                                let badge = QuotaBadge(quota:quota)
+                                Text(badge.fresh ? String(format:"%.0f%%",quota.remaining) : "—")
+                                    .foregroundStyle(badge.tint).fontWeight(.semibold).help(badge.hint)
+                            }
+                        }
+                        Text(limits.map { QuotaBadge(quota:$0).title }.joined(separator:"/"))
+                            .foregroundStyle(.gray)
+                    }
                 }
             }
             Spacer(minLength:0)
@@ -1040,6 +1093,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var outsideClickMonitor: Any?
     var localClickMonitor: Any?
     func applicationDidFinishLaunching(_ notification: Notification) {
+        Journal.write("app_started",["version":Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown","accessibility":String(AXIsProcessTrusted())])
         NSApp.setActivationPolicy(.accessory)
         panel = Panel(contentRect:.zero,styleMask:[.borderless,.nonactivatingPanel],backing:.buffered,defer:false)
         panel.isOpaque = false; panel.backgroundColor = .clear; panel.hasShadow = true

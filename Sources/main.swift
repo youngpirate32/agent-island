@@ -45,7 +45,7 @@ enum Preferences {
         "notifyCodex":true,"notifyClaude":true,"notificationSound":false,"autoHideNotifications":true,"notificationDelay":7.0,
         "animateLogos":true,"animatePanel":true,"logoSpeed":1.0,"logoSize":14.0,"overlapLogos":true,
         "compactSide":"left","expandedWidth":350.0,"cornerRadius":24.0,"panelShadow":true,
-        "showSessions":true,"showTokens":true,"showTime":true,"showQuotas":true,"showChat":true,"hideInactive":true,"visibility.codex-app":"active","visibility.codex-cli":"active","visibility.claude-app":"active","visibility.claude-cli":"active","sessionCount":3,
+        "showSessions":true,"showTokens":true,"showTime":true,"showQuotas":true,"showChat":true,"showAccessButton":true,"hideInactive":true,"visibility.codex-app":"active","visibility.codex-cli":"active","visibility.claude-app":"active","visibility.claude-cli":"active","sessionCount":3,
         "closeOnOutsideClick":true
     ]
     static func enabled(_ key: String) -> Bool { UserDefaults.standard.bool(forKey:key) }
@@ -67,6 +67,7 @@ final class IslandModel: ObservableObject {
     var lastSoundID: String?
     @Published var panelWidth: CGFloat = 300
     @Published var panelHeight: CGFloat = 32
+    @Published var accessibilityGranted = AXIsProcessTrusted()
     @Published var chatStatus = "unknown"
     @Published var chatDetail = "Claude закрыт"
     @Published var demo = false
@@ -298,6 +299,8 @@ final class IslandModel: ObservableObject {
         onResize?()
     }
     func checkClaude() {
+        let granted = AXIsProcessTrusted()
+        if accessibilityGranted != granted { accessibilityGranted = granted; onResize?() }
         guard !axBusy else { return }
         guard let app = NSWorkspace.shared.runningApplications.first(where: { $0.bundleIdentifier == "com.anthropic.claudefordesktop" }) else {
             chatStatus = "idle"; chatDetail = "Claude закрыт"; return
@@ -724,7 +727,7 @@ struct DataSettings: View {
     @AppStorage("showTokens") private var tokens = true
     @AppStorage("showTime") private var time = true
     @AppStorage("showQuotas") private var quotas = true
-    @AppStorage("showChat") private var chat = true
+    @AppStorage("showAccessButton") private var showAccessButton = true
     @AppStorage("hideInactive") private var inactive = true
     @AppStorage("sessionCount") private var count = 3
     @AppStorage("closeOnOutsideClick") private var outside = true
@@ -744,7 +747,9 @@ struct DataSettings: View {
                 Text("Без связи — нет сигнала о состоянии. Активные задачи — работа, ожидание ответа или ошибка. Эти настройки скрывают строки источников; сеансы и уведомления настраиваются отдельно.")
                     .font(.caption).foregroundStyle(.secondary)
             }
-            Section("Обычный чат Claude") {
+            Section("Универсальный доступ") {
+                Toggle("Показывать кнопку доступа в панели",isOn:$showAccessButton)
+                Text("Кнопка скрывается автоматически, когда разрешение выдано.").font(.caption).foregroundStyle(.secondary)
                 TimelineView(.periodic(from:.now,by:2)) { _ in
                     HStack {
                         Text(AXIsProcessTrusted() ? "Универсальный доступ подключён" : "Нужен универсальный доступ")
@@ -863,7 +868,7 @@ struct IslandView: View {
     @AppStorage("showTokens") private var showTokens = true
     @AppStorage("showTime") private var showTime = true
     @AppStorage("showQuotas") private var showQuotas = true
-    @AppStorage("showChat") private var showChat = true
+    @AppStorage("showAccessButton") private var showAccessButton = true
     @AppStorage("hideInactive") private var hideInactive = true
     @AppStorage("sessionCount") private var sessionCount = 3
     @AppStorage("cornerRadius") private var cornerRadius = 24.0
@@ -980,6 +985,13 @@ struct IslandView: View {
                         Text("Остаток подписки").font(.system(size:11,weight:.semibold))
                         QuotaStrip(quotas:model.quotas)
                     }.padding(.horizontal,12).padding(.vertical,6) }
+                    if showAccessButton && !model.accessibilityGranted {
+                        Button { model.requestAccess() } label: {
+                            Label("Универсальный доступ",systemImage:"hand.raised")
+                                .font(.system(size:10)).frame(maxWidth:.infinity)
+                        }.buttonStyle(.bordered).padding(.horizontal,12).padding(.vertical,4)
+                        .help("Разрешить переключение окон терминала и определение активности обычного чата Claude")
+                    }
                     if let error = model.error { Text(error).font(.system(size:10)).foregroundStyle(.orange) }
                     ZStack {
                         Text("Agent Island").font(.system(size:9,weight:.medium)).foregroundStyle(.white)

@@ -349,20 +349,55 @@ final class IslandModel: ObservableObject {
             expanded = false; onResize?(); return
         }
         if session.source.hasSuffix("cli"), AXIsProcessTrusted() {
-            var matches: [(NSRunningApplication, AXUIElement)] = []
-            for app in NSWorkspace.shared.runningApplications where ["com.googlecode.iterm2","com.apple.Terminal","com.mitchellh.ghostty"].contains(app.bundleIdentifier ?? "") {
+            var windows: [(NSRunningApplication, AXUIElement)] = []
+            var tabs: [(NSRunningApplication, AXUIElement)] = []
+            var menuItems: [(NSRunningApplication, AXUIElement)] = []
+            func attribute(_ element: AXUIElement, _ key: String) -> CFTypeRef? {
                 var value: CFTypeRef?
-                AXUIElementCopyAttributeValue(AXUIElementCreateApplication(app.processIdentifier),kAXWindowsAttribute as CFString,&value)
-                for window in value as? [AXUIElement] ?? [] {
-                    var title: CFTypeRef?
-                    AXUIElementCopyAttributeValue(window,kAXTitleAttribute as CFString,&title)
-                    if let title = title as? String, title.contains(session.id) || (session.title != nil && title.contains(session.displayTitle)) {
-                        matches.append((app,window))
+                AXUIElementCopyAttributeValue(element,key as CFString,&value)
+                return value
+            }
+            func matchesTitle(_ title: String) -> Bool {
+                if title.contains(session.id) { return true }
+                guard let name = session.title, !name.isEmpty else { return false }
+                let trim = CharacterSet.whitespacesAndNewlines.union(.symbols).union(.punctuationCharacters)
+                return title.trimmingCharacters(in:trim).localizedCaseInsensitiveCompare(name.trimmingCharacters(in:trim)) == .orderedSame
+            }
+            for app in NSWorkspace.shared.runningApplications where ["com.googlecode.iterm2","com.apple.Terminal","com.mitchellh.ghostty"].contains(app.bundleIdentifier ?? "") {
+                let root = AXUIElementCreateApplication(app.processIdentifier)
+                AXUIElementSetMessagingTimeout(root,0.2)
+                let appWindows = attribute(root,kAXWindowsAttribute) as? [AXUIElement] ?? []
+                for window in appWindows {
+                    if matchesTitle(attribute(window,kAXTitleAttribute) as? String ?? "") { windows.append((app,window)) }
+                }
+                var queue = appWindows.map { ($0,0) }
+                if let menu = attribute(root,kAXMenuBarAttribute) { queue.append((menu as! AXUIElement,0)) }
+                var visited = 0
+                while !queue.isEmpty && visited < 500 {
+                    let (element,depth) = queue.removeFirst(); visited += 1
+                    let role = attribute(element,kAXRoleAttribute) as? String ?? ""
+                    // Never read terminal contents or send keystrokes to a shell.
+                    if ["AXTextArea","AXTextField","AXWebArea"].contains(role) { continue }
+                    if ["AXRadioButton","AXTab","AXMenuItem"].contains(role) {
+                        let title = attribute(element,kAXTitleAttribute) as? String ?? ""
+                        let description = attribute(element,kAXDescriptionAttribute) as? String ?? ""
+                        if matchesTitle(title) || matchesTitle(description) {
+                            if role == "AXMenuItem" { menuItems.append((app,element)) }
+                            else { tabs.append((app,element)) }
+                        }
+                    }
+                    if depth < 12 {
+                        queue += (attribute(element,kAXChildrenAttribute) as? [AXUIElement] ?? []).map { ($0,depth+1) }
                     }
                 }
             }
-            if matches.count == 1, AXUIElementPerformAction(matches[0].1,kAXRaiseAction as CFString) == .success {
-                matches[0].0.activate(); expanded = false; onResize?(); return
+            let candidates = !tabs.isEmpty ? tabs : !windows.isEmpty ? windows : menuItems
+            if candidates.count == 1 {
+                let (app,element) = candidates[0]
+                let action = !tabs.isEmpty || windows.isEmpty ? kAXPressAction : kAXRaiseAction
+                if AXUIElementPerformAction(element,action as CFString) == .success {
+                    app.activate(); error = nil; expanded = false; onResize?(); return
+                }
             }
         }
         error = "Не удалось открыть точный сеанс. Открыт источник; выберите чат в нём."

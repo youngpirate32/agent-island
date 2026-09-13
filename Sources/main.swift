@@ -40,6 +40,7 @@ struct Session: Codable, Identifiable {
     var totalTokens: Int? = nil
     var noticeText: String? = nil
     var quotaRemaining: Double? = nil
+    var quotaPeriod: String? = nil
     var title: String? = nil
     var desktopSessionID: String? = nil
     var displayTitle: String { title?.isEmpty == false ? title! : project }
@@ -207,7 +208,7 @@ final class IslandModel: ObservableObject {
             let sameWindow = (saved?["reset"] as? Double) == quota.resetsAt
             let previous = sameWindow ? (saved?["step"] as? Int) : nil
             if let previous, step > previous, Preferences.enabled("notificationsEnabled"), Preferences.enabled("notifyQuota"), Preferences.enabled(quota.provider == "codex" ? "notifyCodex" : "notifyClaude") {
-                quotaNotices.append(Session(id:key + ":" + String(step),source:quota.provider + "-app",status:"quota",updated:quota.updated,project:(quota.provider == "codex" ? "Codex" : "Claude") + " · " + quota.label,attention:"quota",noticeText:String(format:"Осталось %.0f%% лимита",quota.remaining),quotaRemaining:quota.remaining))
+                quotaNotices.append(Session(id:key + ":" + String(step),source:quota.provider + "-app",status:"quota",updated:quota.updated,project:(quota.provider == "codex" ? "Codex" : "Claude") + " · " + quota.label,attention:"quota",noticeText:String(format:"Осталось %.0f%% лимита",quota.remaining),quotaRemaining:quota.remaining,quotaPeriod:quota.label == "Неделя" ? "7 дней" : quota.label))
             }
             UserDefaults.standard.set(["reset":quota.resetsAt,"step":max(step,previous ?? step)],forKey:key)
         }
@@ -269,6 +270,17 @@ final class IslandModel: ObservableObject {
         item.totalTokens = 18400; item.inputTokens = 15000; item.outputTokens = 3400; item.cachedTokens = 10000
         return item
     }
+    func previewQuota(period: String) {
+        prepareDemo()
+        sessions = []
+        var notice = sample("preview-quota","codex-app","quota","Codex · пример")
+        notice.quotaPeriod = period
+        notice.quotaRemaining = period == "5 часов" ? 20 : 10
+        notice.noticeText = "Осталось \(Int(notice.quotaRemaining!))% лимита"
+        quotaNotices = [notice]
+        onResize?()
+        demoTimer = Timer.scheduledTimer(withTimeInterval:7,repeats:false) { [weak self] _ in self?.stopDemo() }
+    }
     func previewCompletion() {
         prepareDemo()
         sessions = [sample("preview-done","codex-app","done","Пример завершения")]
@@ -308,7 +320,7 @@ final class IslandModel: ObservableObject {
         case 6:
             completionSession = nil
             var notice = sample("demo-limit","codex-app","quota","Недельный лимит")
-            notice.quotaRemaining = 20; notice.noticeText = "Осталось 20% лимита";quotaNotices = [notice]
+            notice.quotaPeriod = "7 дней"; notice.quotaRemaining = 20; notice.noticeText = "Осталось 20% лимита";quotaNotices = [notice]
         case 7:
             quotaNotices.removeAll();sessions[1].status = "error";completionSession = sessions[1]
         case 8:
@@ -606,8 +618,18 @@ struct AttentionView: View {
             Image(nsImage:session.source.hasPrefix("codex") ? BrandIcons.codex : BrandIcons.claude)
                 .resizable().frame(width:22,height:22)
             VStack(alignment:.leading,spacing:4) {
-                Text(session.status == "quota" ? (model.demo ? "Пример · лимит подписки" : "Лимит подписки") : session.status == "error" ? (model.demo ? "Пример · ошибка агента" : "Агент сообщил об ошибке") : session.status == "done" ? (model.demo ? "Пример · ответ готов" : (session.source.hasPrefix("codex") ? "Codex · ответ готов" : "Claude · ответ готов")) : (model.demo ? "Пример · нужен ваш ответ" : (session.source.hasPrefix("codex") ? "Codex ждёт вас" : "Claude ждёт вас")))
+                if session.status == "quota" {
+                    HStack(spacing:7) {
+                        Text("Лимит").font(.system(size:13,weight:.semibold))
+                        Text(session.quotaPeriod ?? "Подписка")
+                            .font(.system(size:13,weight:.bold)).foregroundStyle(.white)
+                            .padding(.horizontal,7).padding(.vertical,3)
+                            .background(.white.opacity(0.14),in:RoundedRectangle(cornerRadius:5))
+                    }
+                } else {
+                Text( session.status == "error" ? (model.demo ? "Пример · ошибка агента" : "Агент сообщил об ошибке") : session.status == "done" ? (model.demo ? "Пример · ответ готов" : (session.source.hasPrefix("codex") ? "Codex · ответ готов" : "Claude · ответ готов")) : (model.demo ? "Пример · нужен ваш ответ" : (session.source.hasPrefix("codex") ? "Codex ждёт вас" : "Claude ждёт вас")))
                     .font(.system(size:13,weight:.semibold))
+                }
                 Text(session.status == "quota" ? (session.noticeText ?? "Лимит обновился") : session.status == "error" ? "Откройте сеанс для подробностей" : session.status == "done" ? "Можно посмотреть результат" : (session.attention == "permission" ? "Нужно разрешение на действие" : "Нужен ответ или подтверждение"))
                     .font(.system(size:11)).foregroundStyle(session.status == "done" ? Color.green : session.status == "quota" && (session.quotaRemaining ?? 100) <= 10 ? Color.red : Color.orange)
                 Text(session.displayTitle).font(.system(size:10)).foregroundStyle(.gray).lineLimit(1)
@@ -712,6 +734,10 @@ struct NotificationSettings: View {
                     Button("Нужен ответ") { model.previewAttention() }
                     Button("Готово") { model.previewCompletion() }
                     Button(model.demo ? "Остановить демо" : "Демо") { model.setDemo() }
+                }
+                HStack {
+                    Button("Расход лимита · 5 часов") { model.previewQuota(period:"5 часов") }
+                    Button("Расход лимита · 7 дней") { model.previewQuota(period:"7 дней") }
                 }
             }
         }.formStyle(.grouped)

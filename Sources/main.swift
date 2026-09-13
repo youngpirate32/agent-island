@@ -72,7 +72,7 @@ enum Preferences {
         "notifyCodex":true,"notifyClaude":true,"notificationSound":false,"autoHideNotifications":true,"notificationDelay":7.0,
         "animateLogos":true,"animatePanel":true,"logoSpeed":1.0,"logoSize":14.0,"overlapLogos":true,
         "compactSide":"left","expandedWidth":350.0,"cornerRadius":24.0,"panelShadow":true,
-        "showSessions":true,"showTokens":true,"showTime":true,"showQuotas":true,"combineQuotas":true,"showChat":true,"showAccessButton":true,"hideInactive":true,"visibility.codex-app":"active","visibility.codex-cli":"active","visibility.claude-app":"active","visibility.claude-cli":"active","sessionCount":3,
+        "showSessions":true,"showTokens":true,"showTime":true,"showQuotas":true,"combineQuotas":true,"showQuotaReset":true,"showChat":true,"showAccessButton":true,"hideInactive":true,"visibility.codex-app":"active","visibility.codex-cli":"active","visibility.claude-app":"active","visibility.claude-cli":"active","sessionCount":3,
         "closeOnOutsideClick":true
     ]
     static func enabled(_ key: String) -> Bool { UserDefaults.standard.bool(forKey:key) }
@@ -768,6 +768,7 @@ struct DataSettings: View {
     @AppStorage("showTokens") private var tokens = true
     @AppStorage("showTime") private var time = true
     @AppStorage("showQuotas") private var quotas = true
+    @AppStorage("showQuotaReset") private var showQuotaReset = true
     @AppStorage("combineQuotas") private var combineQuotas = true
     @AppStorage("showAccessButton") private var showAccessButton = true
     @AppStorage("hideInactive") private var inactive = true
@@ -782,6 +783,7 @@ struct DataSettings: View {
                 Toggle("Время запроса",isOn:$time).disabled(!sessions)
                 Toggle("Остатки лимитов подписки",isOn:$quotas)
                 Toggle("Объединять лимиты 5ч и 7д",isOn:$combineQuotas).disabled(!quotas)
+                Toggle("Время до сброса лимитов",isOn:$showQuotaReset).disabled(!quotas)
             }
             Section("Видимость источников") {
                 ForEach(sources,id:\.0) { source in
@@ -813,6 +815,16 @@ struct DataSettings: View {
     }
 }
 
+func quotaResetText(_ reset: Double, now: Double) -> String {
+    guard reset.isFinite && reset > 0 else { return "время неизвестно" }
+    let remaining = reset - now
+    guard remaining > 0 else { return "ждём обновления" }
+    let minutes = Int(ceil(remaining / 60))
+    if minutes >= 1440 { return "через \(minutes / 1440) д \((minutes % 1440) / 60) ч" }
+    if minutes >= 60 { return "через \(minutes / 60) ч \(minutes % 60) мин" }
+    return "через \(minutes) мин"
+}
+
 struct QuotaBadge: View {
     let quota: Quota
     var fresh: Bool { quota.resetsAt > Date().timeIntervalSince1970 }
@@ -834,11 +846,13 @@ struct QuotaBadge: View {
 }
 struct QuotaStrip: View {
     @AppStorage("combineQuotas") private var combineQuotas = true
+    @AppStorage("showQuotaReset") private var showQuotaReset = true
     let quotas: [Quota]
     var body: some View {
-        HStack(spacing:12) {
+        HStack(alignment:.top,spacing:12) {
             ForEach(["codex","claude"],id:\.self) { provider in
                 let limits = quotas.filter { $0.provider == provider }.sorted { ($0.label == "5 часов" ? 0 : 1) < ($1.label == "5 часов" ? 0 : 1) }
+                VStack(alignment:.leading,spacing:4) {
                 if limits.isEmpty {
                     HStack(spacing:4) {
                         Image(nsImage:provider == "codex" ? BrandIcons.codex : BrandIcons.claude).resizable().frame(width:12,height:12)
@@ -860,6 +874,18 @@ struct QuotaStrip: View {
                         Text(limits.map { QuotaBadge(quota:$0).title }.joined(separator:"/"))
                             .foregroundStyle(.gray)
                     }
+                }
+                if showQuotaReset && !limits.isEmpty {
+                    TimelineView(.periodic(from:.now,by:30)) { context in
+                        VStack(alignment:.leading,spacing:2) {
+                            ForEach(limits) { quota in
+                                Text(QuotaBadge(quota:quota).title + " · " + quotaResetText(quota.resetsAt,now:context.date.timeIntervalSince1970))
+                                    .font(.system(size:9)).foregroundStyle(.gray)
+                                    .help(QuotaBadge(quota:quota).hint)
+                            }
+                        }
+                    }
+                }
                 }
             }
             Spacer(minLength:0)

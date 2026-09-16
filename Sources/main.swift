@@ -48,6 +48,8 @@ struct Session: Codable, Identifiable {
 struct Quota: Codable, Identifiable {
     var id: String; var provider: String; var label: String
     var remaining: Double; var resetsAt: Double; var updated: Double
+    var groupName: String? = nil
+    var groupID: String { id.split(separator:":").dropLast().joined(separator:":") }
 }
 struct Snapshot: Codable { var sessions: [Session]; var limits: [Quota] }
 func tokenNumber(_ value: Int) -> String {
@@ -875,10 +877,13 @@ struct QuotaStrip: View {
     @AppStorage("showQuotaReset") private var showQuotaReset = true
     let quotas: [Quota]
     var body: some View {
-        HStack(alignment:.top,spacing:12) {
-            ForEach(["codex","claude"],id:\.self) { provider in
-                let limits = quotas.filter { $0.provider == provider }.sorted { ($0.label == "5 часов" ? 0 : 1) < ($1.label == "5 часов" ? 0 : 1) }
+        VStack(alignment:.leading,spacing:8) {
+            ForEach(Array(Set(quotas.map(\.groupID))).sorted(),id:\.self) { group in
+                let groupQuotas = quotas.filter { $0.groupID == group }
+                let provider = groupQuotas.first?.provider ?? "codex"
+                let limits = groupQuotas.sorted { ($0.label == "5 часов" ? 0 : 1) < ($1.label == "5 часов" ? 0 : 1) }
                 VStack(alignment:.leading,spacing:4) {
+                Text(limits.first?.groupName ?? group).font(.system(size:10,weight:.medium)).foregroundStyle(.white)
                 if limits.isEmpty {
                     HStack(spacing:4) {
                         Image(nsImage:provider == "codex" ? BrandIcons.codex : BrandIcons.claude).resizable().frame(width:12,height:12)
@@ -914,7 +919,6 @@ struct QuotaStrip: View {
                 }
                 }
             }
-            Spacer(minLength:0)
         }.font(.system(size:10))
     }
 }

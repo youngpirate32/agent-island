@@ -42,7 +42,7 @@ def quota_windows(provider, data, updated):
         if not isinstance(used,(int,float)) or not isinstance(reset,(int,float)):continue
         limit=data.get('limit_id','codex') if provider=='codex' else 'claude'
         label='Неделя' if duration==10080 else '5 часов' if duration==300 else str(duration or '')+' мин'
-        result.append(dict(id=provider+':'+limit+':'+key,provider=provider,label=label,remaining=max(0,min(100,100-used)),resetsAt=reset,updated=updated))
+        result.append(dict(id=provider+':'+limit+':'+key,provider=provider,label=label,groupName=(data.get('limit_name') or ('Codex' if limit=='codex' else limit)) if provider=='codex' else 'Claude',remaining=max(0,min(100,100-used)),resetsAt=reset,updated=updated))
     return result
 
 def metrics(record,d):

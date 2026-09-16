@@ -75,7 +75,7 @@ enum Preferences {
         "notifyCodex":true,"notifyClaude":true,"notificationSound":false,"autoHideNotifications":true,"notificationDelay":7.0,
         "animateLogos":true,"animatePanel":true,"logoSpeed":1.0,"logoSize":14.0,"overlapLogos":true,
         "compactSide":"left","expandedWidth":350.0,"cornerRadius":24.0,"panelShadow":true,
-        "showSessions":true,"showTokens":true,"showTime":true,"showQuotas":true,"combineQuotas":true,"showQuotaReset":true,"showChat":true,"showAccessButton":true,"hideInactive":true,"visibility.codex-app":"active","visibility.codex-cli":"active","visibility.claude-app":"active","visibility.claude-cli":"active","sessionCount":3,
+        "showSessions":true,"showTokens":true,"showTime":true,"showQuotas":true,"combineQuotas":true,"quotaLayout":"compact","hiddenQuotaGroups":"","showQuotaReset":true,"showChat":true,"showAccessButton":true,"hideInactive":true,"visibility.codex-app":"active","visibility.codex-cli":"active","visibility.claude-app":"active","visibility.claude-cli":"active","sessionCount":3,
         "closeOnOutsideClick":true
     ]
     static func enabled(_ key: String) -> Bool { UserDefaults.standard.bool(forKey:key) }
@@ -792,6 +792,8 @@ struct SourceVisibilityPicker: View {
 }
 struct DataSettings: View {
     @ObservedObject var model: IslandModel
+    @AppStorage("quotaLayout") private var quotaLayout = "compact"
+    @AppStorage("hiddenQuotaGroups") private var hiddenQuotaGroups = ""
     @AppStorage("showSessions") private var sessions = true
     @AppStorage("showTokens") private var tokens = true
     @AppStorage("showTime") private var time = true
@@ -813,6 +815,22 @@ struct DataSettings: View {
                 Toggle("Объединять лимиты 5ч и 7д",isOn:$combineQuotas).disabled(!quotas)
                 Toggle("Время до сброса лимитов",isOn:$showQuotaReset).disabled(!quotas)
             }
+            Section("Отображение лимитов") {
+                Picker("Вид",selection:$quotaLayout) {
+                    Text("Компактный").tag("compact")
+                    Text("Подробный").tag("detailed")
+                }
+                Text("В компактном виде время сброса доступно при наведении на процент.").font(.caption).foregroundStyle(.secondary)
+                ForEach(Array(Set(model.quotas.map(\.groupID))).sorted(),id:\.self) { group in
+                    Toggle(model.quotas.first(where:{$0.groupID == group})?.groupName ?? group,isOn:Binding(get:{
+                        !hiddenQuotaGroups.split(separator:",").map(String.init).contains(group)
+                    },set:{ visible in
+                        var hidden = Set(hiddenQuotaGroups.split(separator:",").map(String.init))
+                        if visible { hidden.remove(group) } else { hidden.insert(group) }
+                        hiddenQuotaGroups = hidden.sorted().joined(separator:",")
+                    }))
+                }
+            }.disabled(!quotas)
             Section("Видимость источников") {
                 ForEach(sources,id:\.0) { source in
                     SourceVisibilityPicker(source:source.0,title:source.1 + " · " + (source.0.hasSuffix("cli") ? "терминал" : "приложение"))
@@ -875,48 +893,37 @@ struct QuotaBadge: View {
 struct QuotaStrip: View {
     @AppStorage("combineQuotas") private var combineQuotas = true
     @AppStorage("showQuotaReset") private var showQuotaReset = true
+    @AppStorage("quotaLayout") private var layout = "compact"
+    @AppStorage("hiddenQuotaGroups") private var hidden = ""
     let quotas: [Quota]
     var body: some View {
-        VStack(alignment:.leading,spacing:8) {
-            ForEach(Array(Set(quotas.map(\.groupID))).sorted(),id:\.self) { group in
-                let groupQuotas = quotas.filter { $0.groupID == group }
-                let provider = groupQuotas.first?.provider ?? "codex"
-                let limits = groupQuotas.sorted { ($0.label == "5 часов" ? 0 : 1) < ($1.label == "5 часов" ? 0 : 1) }
+        VStack(alignment:.leading,spacing:layout == "compact" ? 5 : 8) {
+            ForEach(Array(Set(quotas.map(\.groupID))).sorted().filter { !hidden.split(separator:",").map(String.init).contains($0) },id:\.self) { group in
+                let limits = quotas.filter { $0.groupID == group }.sorted { ($0.label == "5 часов" ? 0 : 1) < ($1.label == "5 часов" ? 0 : 1) }
+                let provider = limits.first?.provider ?? "codex"
+                let name = limits.first?.groupName ?? provider
                 VStack(alignment:.leading,spacing:4) {
-                Text(limits.first?.groupName ?? group).font(.system(size:10,weight:.medium)).foregroundStyle(.white)
-                if limits.isEmpty {
-                    HStack(spacing:4) {
+                    HStack(spacing:5) {
                         Image(nsImage:provider == "codex" ? BrandIcons.codex : BrandIcons.claude).resizable().frame(width:12,height:12)
-                        Text("—").foregroundStyle(.gray)
-                    }.help((provider == "codex" ? "Codex" : "Claude") + ": нет данных")
-                } else if !combineQuotas {
-                    ForEach(limits) { quota in QuotaBadge(quota:quota) }
-                } else {
-                    HStack(spacing:4) {
-                        Image(nsImage:provider == "codex" ? BrandIcons.codex : BrandIcons.claude).resizable().frame(width:12,height:12)
-                        HStack(spacing:1) {
-                            ForEach(Array(limits.enumerated()),id:\.element.id) { index, quota in
-                                if index > 0 { Text("/").foregroundStyle(.gray) }
-                                let badge = QuotaBadge(quota:quota)
-                                Text(badge.fresh ? String(format:"%.0f%%",quota.remaining) : "—")
-                                    .foregroundStyle(badge.tint).fontWeight(.semibold).help(badge.hint)
-                            }
+                        Text(name == "GPT-5.3-Codex-Spark" ? "Spark" : name).lineLimit(1).help(name)
+                        Spacer(minLength:4)
+                        ForEach(Array(limits.enumerated()),id:\.element.id) { index,quota in
+                            if index > 0 { Text(combineQuotas ? "/" : "·").foregroundStyle(.gray) }
+                            let badge = QuotaBadge(quota:quota)
+                            Text(badge.fresh ? String(format:"%.0f%%",quota.remaining) : "—")
+                                .foregroundStyle(badge.tint).fontWeight(.semibold).help(badge.hint)
+                            if !combineQuotas { Text(badge.title).foregroundStyle(.gray) }
                         }
-                        Text(limits.map { QuotaBadge(quota:$0).title }.joined(separator:"/"))
-                            .foregroundStyle(.gray)
+                        if combineQuotas { Text(limits.map { QuotaBadge(quota:$0).title }.joined(separator:"/")).foregroundStyle(.gray) }
                     }
-                }
-                if showQuotaReset && !limits.isEmpty {
-                    TimelineView(.periodic(from:.now,by:30)) { context in
-                        VStack(alignment:.leading,spacing:2) {
+                    if layout == "detailed" && showQuotaReset {
+                        TimelineView(.periodic(from:.now,by:30)) { context in
                             ForEach(limits) { quota in
                                 Text(QuotaBadge(quota:quota).title + " · " + quotaResetText(quota.resetsAt,now:context.date.timeIntervalSince1970))
-                                    .font(.system(size:9)).foregroundStyle(.gray)
-                                    .help(QuotaBadge(quota:quota).hint)
+                                    .font(.system(size:9)).foregroundStyle(.gray).help(QuotaBadge(quota:quota).hint)
                             }
                         }
                     }
-                }
                 }
             }
         }.font(.system(size:10))

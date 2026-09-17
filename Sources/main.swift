@@ -1132,7 +1132,10 @@ struct IslandView: View {
         .fixedSize(horizontal:false,vertical:true)
         .frame(height:measurementWidth == nil ? model.panelHeight : nil,alignment:.top)
         .clipped()
-        .background(Color.black,in:UnevenRoundedRectangle(bottomLeadingRadius:cornerRadius,bottomTrailingRadius:cornerRadius))
+        .background(Color.black,in:UnevenRoundedRectangle(
+            bottomLeadingRadius:model.expanded || model.displayedAttention != nil ? cornerRadius : 10,
+            bottomTrailingRadius:model.expanded || model.displayedAttention != nil ? cornerRadius : 10,
+            style:.continuous))
         .overlay(alignment:.bottom) { if !model.expanded && model.displayedAttention == nil { Capsule().fill(.white.opacity(hovering ? 0.65 : 0.24)).frame(width:hovering ? 38 : 28,height:2).padding(.bottom,3) } }
         .onHover { hovering = $0 }
         .animation(reduceMotion ? nil : .easeOut(duration:0.2),value:hovering)
